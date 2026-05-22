@@ -1,0 +1,114 @@
+---
+- name: RHEL Security Hardening
+  hosts: rhel_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    ssh_permit_root_login: "prohibit-password"
+    ssh_max_auth_tries: 4
+    ssh_x11_forwarding: "no"
+    ssh_password_auth: "no"
+    enable_firewalld: true
+    enable_selinux: true
+    disable_thp: true
+    sysctl_tuning: true
+
+  tasks:
+    - name: SSH hardening
+      tags: [ssh]
+      block:
+        - lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: "^#?\s*{{ item.key }}"
+            line: "{{ item.key }} {{ item.value }}"
+            backup: yes
+          loop:
+            - {key: PermitRootLogin,      value: "{{ ssh_permit_root_login }}"}
+            - {key: MaxAuthTries,         value: "{{ ssh_max_auth_tries }}"}
+            - {key: X11Forwarding,        value: "{{ ssh_x11_forwarding }}"}
+            - {key: PasswordAuthentication, value: "{{ ssh_password_auth }}"}
+            - {key: PermitEmptyPasswords, value: "no"}
+            - {key: ClientAliveInterval,  value: "300"}
+            - {key: ClientAliveCountMax,  value: "3"}
+            - {key: LogLevel,             value: "INFO"}
+          notify: reload sshd
+
+    - name: Enable and configure firewalld
+      tags: [firewall]
+      when: enable_firewalld
+      block:
+        - systemd:
+            name: firewalld
+            state: started
+            enabled: yes
+        - firewalld:
+            service: "{{ item }}"
+            permanent: yes
+            state: enabled
+          loop: [ssh]
+          notify: reload firewalld
+
+    - name: Set SELinux to enforcing
+      tags: [selinux]
+      when: enable_selinux
+      selinux:
+        policy: targeted
+        state: enforcing
+
+    - name: Disable Transparent Huge Pages
+      tags: [kernel]
+      when: disable_thp
+      block:
+        - shell: echo never > /sys/kernel/mm/transparent_hugepage/enabled
+          changed_when: false
+        - lineinfile:
+            path: /etc/rc.local
+            line: "echo never > /sys/kernel/mm/transparent_hugepage/enabled"
+            create: yes
+
+    - name: Apply sysctl hardening
+      tags: [kernel, sysctl]
+      when: sysctl_tuning
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-hardening.conf
+        reload: yes
+      loop:
+        - {name: net.ipv4.ip_forward,                       value: "0"}
+        - {name: net.ipv4.conf.all.send_redirects,          value: "0"}
+        - {name: net.ipv4.conf.all.accept_redirects,        value: "0"}
+        - {name: net.ipv4.conf.all.log_martians,            value: "1"}
+        - {name: net.ipv4.tcp_syncookies,                   value: "1"}
+        - {name: kernel.randomize_va_space,                 value: "2"}
+
+    - name: Ensure auditd is running
+      tags: [audit]
+      systemd:
+        name: auditd
+        state: started
+        enabled: yes
+
+    - name: Set password quality requirements
+      tags: [password]
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "^#?\s*{{ item.key }}"
+        line: "{{ item.key }} = {{ item.value }}"
+      loop:
+        - {key: minlen,  value: "14"}
+        - {key: dcredit, value: "-1"}
+        - {key: ucredit, value: "-1"}
+        - {key: ocredit, value: "-1"}
+        - {key: lcredit, value: "-1"}
+
+  handlers:
+    - name: reload sshd
+      systemd:
+        name: sshd
+        state: reloaded
+    - name: reload firewalld
+      systemd:
+        name: firewalld
+        state: reloaded

@@ -1,0 +1,37 @@
+---
+- name: Security Audit (read-only)
+  hosts: rhel_servers
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Gather SSH config status
+      shell: grep -iE "^(PermitRootLogin|PasswordAuthentication|X11Forwarding|MaxAuthTries)" /etc/ssh/sshd_config
+      register: ssh_config
+      changed_when: false
+
+    - name: Check SELinux status
+      command: getenforce
+      register: selinux_status
+      changed_when: false
+
+    - name: Check firewalld
+      command: systemctl is-active firewalld
+      register: fw_status
+      changed_when: false
+      failed_when: false
+
+    - name: Check auditd
+      command: systemctl is-active auditd
+      register: audit_status
+      changed_when: false
+      failed_when: false
+
+    - name: Print audit report
+      debug:
+        msg: |
+          ====== Security Audit: {{ inventory_hostname }} ======
+          SELinux    : {{ selinux_status.stdout }}
+          Firewalld  : {{ fw_status.stdout }}
+          Auditd     : {{ audit_status.stdout }}
+          SSH Config : {{ ssh_config.stdout_lines }}
